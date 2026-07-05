@@ -29,7 +29,7 @@ class Piper(ManipulatorModel):
 
     @property
     def init_qpos(self):
-        return np.array([0.0, 1.0, -1.0, 0.0, 0.0, 0.0])
+        return np.deg2rad([-1.143, 1.596, -1.799, -2.416, 25.030, 22.706])
 
     @property
     def base_xpos_offset(self):

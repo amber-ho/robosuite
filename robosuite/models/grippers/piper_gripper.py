@@ -23,7 +23,8 @@ class PiperGripperBase(GripperModel):
 
     @property
     def init_qpos(self):
-        return np.array([0.035, -0.035])
+        opening = 0.035 * 59.4 / 70.0
+        return np.array([opening, -opening])
 
     @property
     def _important_geoms(self):
