@@ -12,6 +12,20 @@ from robosuite.utils.placement_samplers import UniformRandomSampler
 from robosuite.utils.transform_utils import convert_quat
 
 
+class BlueCuboidObject(BoxObject):
+    """Lift task cuboid with matching blue visual, collision, and site colors."""
+
+    @staticmethod
+    def get_collision_attrib_template():
+        return {"group": "0", "rgba": "0 0 0.5 1"}
+
+    @staticmethod
+    def get_site_attrib_template():
+        template = BoxObject.get_site_attrib_template()
+        template["rgba"] = "0 0 1 1"
+        return template
+
+
 class Lift(SingleArmEnv):
     """
     This class corresponds to the lifting task for a single robot arm.
@@ -140,7 +154,7 @@ class Lift(SingleArmEnv):
         controller_configs=None,
         gripper_types="default",
         initialization_noise="default",
-        table_full_size=(0.8, 0.8, 0.05),
+        table_full_size=(0.8, 1.2, 0.05),
         table_friction=(1.0, 5e-3, 1e-4),
         use_camera_obs=True,
         use_object_obs=True,
@@ -287,19 +301,19 @@ class Lift(SingleArmEnv):
             "specular": "0.4",
             "shininess": "0.1",
         }
-        redwood = CustomMaterial(
-            texture="WoodRed",
-            tex_name="redwood",
-            mat_name="redwood_mat",
+        bluewood = CustomMaterial(
+            texture="WoodBlue",
+            tex_name="bluewood",
+            mat_name="bluewood_mat",
             tex_attrib=tex_attrib,
             mat_attrib=mat_attrib,
         )
-        self.cube = BoxObject(
+        self.cube = BlueCuboidObject(
             name="cube",
-            size_min=[0.020, 0.020, 0.020],  # [0.015, 0.015, 0.015],
-            size_max=[0.022, 0.022, 0.022],  # [0.018, 0.018, 0.018])
-            rgba=[1, 0, 0, 1],
-            material=redwood,
+            size_min=[0.030, 0.018, 0.020],
+            size_max=[0.034, 0.020, 0.022],
+            rgba=[0, 0, 1, 1],
+            material=bluewood,
         )
 
         # Create placement initializer

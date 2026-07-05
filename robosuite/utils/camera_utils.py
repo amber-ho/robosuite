@@ -17,6 +17,127 @@ import robosuite.utils.transform_utils as T
 from robosuite.wrappers import DomainRandomizationWrapper, VisualizationWrapper
 
 
+CAMERA_AXIS_CORRECTION = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+)
+
+
+def _array_to_xml_string(values):
+    return " ".join("{:.17g}".format(float(value)) for value in values)
+
+
+def load_camera_pose_matrix(path):
+    """
+    Loads a 4x4 camera pose matrix from a whitespace-delimited text file.
+
+    Lines beginning with "#" are ignored.
+
+    Args:
+        path (str): Path to the text file.
+
+    Returns:
+        np.array: 4x4 homogeneous pose matrix.
+    """
+    pose = np.loadtxt(path, comments="#")
+    if pose.shape != (4, 4):
+        raise ValueError("Expected a 4x4 camera pose matrix in {}, got shape {}".format(path, pose.shape))
+    return pose
+
+
+def camera_pose_matrix_to_mujoco_pose(pose_matrix, pose_convention="opencv"):
+    """
+    Converts a 4x4 camera pose matrix to MuJoCo camera XML pose values.
+
+    Args:
+        pose_matrix (np.array): 4x4 camera pose matrix.
+        pose_convention (str): "opencv" for the convention returned by get_camera_extrinsic_matrix(), or
+            "mujoco" if the matrix rotation is already a raw MuJoCo camera rotation.
+
+    Returns:
+        2-tuple:
+            - np.array: camera position.
+            - np.array: camera quaternion in MuJoCo XML order (w, x, y, z).
+    """
+    pose_matrix = np.asarray(pose_matrix, dtype=float)
+    if pose_matrix.shape != (4, 4):
+        raise ValueError("Expected pose_matrix to have shape (4, 4), got {}".format(pose_matrix.shape))
+
+    if pose_convention == "opencv":
+        pose_matrix = pose_matrix @ CAMERA_AXIS_CORRECTION
+    elif pose_convention != "mujoco":
+        raise ValueError("pose_convention must be either 'opencv' or 'mujoco'")
+
+    pos = pose_matrix[:3, 3]
+    quat = T.convert_quat(T.mat2quat(pose_matrix[:3, :3]), to="wxyz")
+    return pos, quat
+
+
+def set_camera_extrinsic_in_xml(
+    xml,
+    camera_name="frontview",
+    pos=None,
+    quat=None,
+    pose_matrix=None,
+    pose_convention="opencv",
+    fovy=None,
+):
+    """
+    Overrides a MuJoCo camera tag in an XML string.
+
+    Args:
+        xml (str): MuJoCo XML string.
+        camera_name (str): Name of the camera to override.
+        pos (None or 3-array): Camera position to write to the XML.
+        quat (None or 4-array): Camera quaternion in MuJoCo XML order (w, x, y, z).
+        pose_matrix (None or np.array): 4x4 camera pose matrix. If specified, this supplies both position and
+            orientation.
+        pose_convention (str): Convention used by @pose_matrix. "opencv" matches get_camera_extrinsic_matrix(),
+            while "mujoco" writes the matrix rotation directly to the XML camera.
+        fovy (None or float): Optional vertical field of view in degrees.
+
+    Returns:
+        str: Updated XML string.
+    """
+    if pose_matrix is not None:
+        pos, quat = camera_pose_matrix_to_mujoco_pose(pose_matrix, pose_convention=pose_convention)
+
+    tree = ET.fromstring(xml)
+    camera_elem = None
+    for camera in tree.findall(".//camera"):
+        if camera.get("name") == camera_name:
+            camera_elem = camera
+            break
+
+    if camera_elem is None:
+        raise ValueError("Camera '{}' was not found in the model XML".format(camera_name))
+
+    if pos is not None:
+        pos = np.asarray(pos, dtype=float)
+        if pos.shape != (3,):
+            raise ValueError("Expected camera pos to have shape (3,), got {}".format(pos.shape))
+        camera_elem.set("pos", _array_to_xml_string(pos))
+
+    if quat is not None:
+        quat = np.asarray(quat, dtype=float)
+        if quat.shape != (4,):
+            raise ValueError("Expected camera quat to have shape (4,), got {}".format(quat.shape))
+        quat_norm = np.linalg.norm(quat)
+        if quat_norm == 0:
+            raise ValueError("Camera quat must be non-zero")
+        quat = quat / quat_norm
+        camera_elem.set("quat", _array_to_xml_string(quat))
+
+    if fovy is not None:
+        camera_elem.set("fovy", "{:.17g}".format(float(fovy)))
+
+    return ET.tostring(tree, encoding="utf8").decode("utf8")
+
+
 def get_camera_intrinsic_matrix(sim, camera_name, camera_height, camera_width):
     """
     Obtains camera intrinsic matrix.
@@ -57,10 +178,7 @@ def get_camera_extrinsic_matrix(sim, camera_name):
     R = T.make_pose(camera_pos, camera_rot)
 
     # IMPORTANT! This is a correction so that the camera axis is set up along the viewpoint correctly.
-    camera_axis_correction = np.array(
-        [[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
-    )
-    R = R @ camera_axis_correction
+    R = R @ CAMERA_AXIS_CORRECTION
     return R
 
 
