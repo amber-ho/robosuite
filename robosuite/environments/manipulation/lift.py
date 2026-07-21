@@ -6,10 +6,23 @@ from robosuite.environments.manipulation.single_arm_env import SingleArmEnv
 from robosuite.models.arenas import TableArena
 from robosuite.models.objects import BoxObject
 from robosuite.models.tasks import ManipulationTask
-from robosuite.utils.mjcf_utils import CustomMaterial
+from robosuite.utils.mjcf_utils import CustomMaterial, array_to_string
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import UniformRandomSampler
 from robosuite.utils.transform_utils import convert_quat
+
+PIPER_CUBOID_DENSITY = 500.0
+PIPER_CUBOID_FRICTION = [2.5, 0.02, 0.0005]
+PIPER_CUBOID_SOLREF = [0.006, 1.0]
+PIPER_CUBOID_SOLIMP = [0.95, 0.99, 0.001]
+
+
+def _robot_table_xpos(robot_model, table_full_size, table_offset):
+    xpos = np.asarray(robot_model.base_xpos_offset["table"](table_full_size[0]), dtype=float)
+    if robot_model.__class__.__name__ == "Piper":
+        xpos = xpos.copy()
+        xpos[2] = float(table_offset[2])
+    return xpos
 
 
 class BlueCuboidObject(BoxObject):
@@ -24,6 +37,19 @@ class BlueCuboidObject(BoxObject):
         template = BoxObject.get_site_attrib_template()
         template["rgba"] = "0 0 1 1"
         return template
+
+
+def table_line_marker(name, xy, table_height, length=0.06, width=0.02, height=0.001):
+    """Create a visual-only black table line centered at xy."""
+    marker = BoxObject(
+        name=name,
+        size=[length / 2.0, width / 2.0, height / 2.0],
+        rgba=[0, 0, 0, 1],
+        obj_type="visual",
+        joints=None,
+    )
+    marker.get_obj().set("pos", array_to_string([xy[0], xy[1], table_height + height / 2.0]))
+    return marker
 
 
 class Lift(SingleArmEnv):
@@ -182,7 +208,7 @@ class Lift(SingleArmEnv):
         # settings for table top
         self.table_full_size = table_full_size
         self.table_friction = table_friction
-        self.table_offset = np.array((1, 1, 0.8))
+        self.table_offset = np.array((0, 0, 0.8))
 
         # reward configuration
         self.reward_scale = reward_scale
@@ -279,7 +305,8 @@ class Lift(SingleArmEnv):
         super()._load_model()
 
         # Adjust base pose accordingly
-        xpos = self.robots[0].robot_model.base_xpos_offset["table"](self.table_full_size[0])
+        xpos = _robot_table_xpos(self.robots[0].robot_model, self.table_full_size, self.table_offset)
+        self.robot_base_xpos = xpos
         self.robots[0].robot_model.set_base_xpos(xpos)
 
         # load model for table top workspace
@@ -310,11 +337,17 @@ class Lift(SingleArmEnv):
         )
         self.cube = BlueCuboidObject(
             name="cube",
-            size_min=[0.030, 0.018, 0.020],
-            size_max=[0.034, 0.020, 0.022],
+            # BoxObject size is half-extents: full cuboid is 7 x 2 x 2 cm.
+            size_min=[0.035, 0.010, 0.010],
+            size_max=[0.035, 0.010, 0.010],
+            density=PIPER_CUBOID_DENSITY,
+            friction=PIPER_CUBOID_FRICTION,
+            solref=PIPER_CUBOID_SOLREF,
+            solimp=PIPER_CUBOID_SOLIMP,
             rgba=[0, 0, 1, 1],
             material=bluewood,
         )
+        self.visual_markers = self._create_visual_markers()
 
         # Create placement initializer
         if self.placement_initializer is not None:
@@ -326,7 +359,7 @@ class Lift(SingleArmEnv):
                 mujoco_objects=self.cube,
                 x_range=[-0.03, 0.03],
                 y_range=[-0.03, 0.03],
-                rotation=None,
+                rotation=0.0,
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
                 reference_pos=self.table_offset,
@@ -337,8 +370,11 @@ class Lift(SingleArmEnv):
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,
             mujoco_robots=[robot.robot_model for robot in self.robots],
-            mujoco_objects=self.cube,
+            mujoco_objects=[self.cube] + self.visual_markers,
         )
+
+    def _create_visual_markers(self):
+        return []
 
     def _setup_references(self):
         """
@@ -440,3 +476,97 @@ class Lift(SingleArmEnv):
 
         # cube is higher than the table top above a margin
         return cube_height > table_height + 0.04
+
+
+class LiftPlaceCuboid(Lift):
+    """Lift the cuboid, place it on a target line, then return the gripper to rest."""
+
+    START_BASE_XY = np.array([0.30, 0.07])
+    TARGET_BASE_XY = np.array([0.30, -0.11])
+    TARGET_XY_TOLERANCE = 0.035
+    REST_POS_TOLERANCE = 0.04
+    REST_ORI_TOLERANCE = 0.25
+    LIFT_HEIGHT = 0.08
+
+    def _create_visual_markers(self):
+        base_xy = self.robot_base_xpos[:2]
+        self.start_xy = base_xy + self.START_BASE_XY
+        self.target_xy = base_xy + self.TARGET_BASE_XY
+        table_height = float(self.table_offset[2])
+        return [
+            table_line_marker("start_line", self.start_xy, table_height),
+            table_line_marker("target_line", self.target_xy, table_height),
+        ]
+
+    def _reset_internal(self):
+        super()._reset_internal()
+        self.has_lifted = False
+        self.rest_eef_pos = np.array(self.sim.data.site_xpos[self.robots[0].eef_site_id])
+        self.rest_eef_mat = np.array(self.sim.data.site_xmat[self.robots[0].eef_site_id]).reshape(3, 3)
+
+    def _post_action(self, action):
+        cube_pos = np.array(self.sim.data.body_xpos[self.cube_body_id])
+        table_height = self.model.mujoco_arena.table_offset[2]
+        self.has_lifted = self.has_lifted or cube_pos[2] > table_height + self.cube.size[2] + self.LIFT_HEIGHT
+        return super()._post_action(action)
+
+    def _cube_on_target(self):
+        cube_pos = np.array(self.sim.data.body_xpos[self.cube_body_id])
+        table_height = self.model.mujoco_arena.table_offset[2]
+        xy_error = np.linalg.norm(cube_pos[:2] - self.target_xy)
+        z_error = abs(cube_pos[2] - (table_height + self.cube.size[2]))
+        return xy_error <= self.TARGET_XY_TOLERANCE and z_error <= 0.025
+
+    def _gripper_returned(self):
+        eef_pos = np.array(self.sim.data.site_xpos[self.robots[0].eef_site_id])
+        eef_mat = np.array(self.sim.data.site_xmat[self.robots[0].eef_site_id]).reshape(3, 3)
+        pos_ok = np.linalg.norm(eef_pos - self.rest_eef_pos) <= self.REST_POS_TOLERANCE
+        delta = eef_mat @ self.rest_eef_mat.T
+        ori_ok = np.linalg.norm(delta - np.eye(3)) <= self.REST_ORI_TOLERANCE
+        return pos_ok and ori_ok
+
+    def _check_success(self):
+        return self.has_lifted and self._cube_on_target() and self._gripper_returned()
+
+
+class PiperEmptyTable(Lift):
+    """Table-only single-arm environment for replaying real Piper actions."""
+
+    def reward(self, action=None):
+        return 0.0
+
+    def _load_model(self):
+        SingleArmEnv._load_model(self)
+
+        xpos = _robot_table_xpos(self.robots[0].robot_model, self.table_full_size, self.table_offset)
+        self.robot_base_xpos = xpos
+        self.robots[0].robot_model.set_base_xpos(xpos)
+
+        mujoco_arena = TableArena(
+            table_full_size=self.table_full_size,
+            table_friction=self.table_friction,
+            table_offset=self.table_offset,
+        )
+        mujoco_arena.set_origin([0, 0, 0])
+
+        self.visual_markers = self._create_visual_markers()
+        self.model = ManipulationTask(
+            mujoco_arena=mujoco_arena,
+            mujoco_robots=[robot.robot_model for robot in self.robots],
+            mujoco_objects=self.visual_markers,
+        )
+
+    def _setup_references(self):
+        SingleArmEnv._setup_references(self)
+
+    def _setup_observables(self):
+        return SingleArmEnv._setup_observables(self)
+
+    def _reset_internal(self):
+        SingleArmEnv._reset_internal(self)
+
+    def visualize(self, vis_settings):
+        SingleArmEnv.visualize(self, vis_settings=vis_settings)
+
+    def _check_success(self):
+        return False

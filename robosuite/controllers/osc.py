@@ -128,6 +128,7 @@ class OperationalSpaceController(Controller):
         control_ori=True,
         control_delta=True,
         uncouple_pos_ori=True,
+        nullspace_joint_kp=10,
         **kwargs,  # does nothing; used so no error raised when dict is passed with extra terms used previously
     ):
 
@@ -191,6 +192,10 @@ class OperationalSpaceController(Controller):
 
         # whether or not pos and ori want to be uncoupled
         self.uncoupling = uncouple_pos_ori
+        self.nullspace_joint_kp = nullspace_joint_kp
+        self.joint1_goal = None
+        self.joint1_goal_kp = 0.0
+        self.joint1_goal_kd = 0.0
 
         # initialize goals based on initial pos / ori
         self.goal_ori = np.array(self.initial_ee_ori_mat)
@@ -348,8 +353,19 @@ class OperationalSpaceController(Controller):
         # Note: Gamma_null = desired nullspace pose torques, assumed to be positional joint control relative
         #                     to the initial joint positions
         self.torques += nullspace_torques(
-            self.mass_matrix, nullspace_matrix, self.initial_joint, self.joint_pos, self.joint_vel
+            self.mass_matrix,
+            nullspace_matrix,
+            self.initial_joint,
+            self.joint_pos,
+            self.joint_vel,
+            joint_kp=self.nullspace_joint_kp,
         )
+        if self.joint1_goal is not None and self.joint_dim > 0:
+            joint1_error = np.arctan2(
+                np.sin(self.joint1_goal - self.joint_pos[0]),
+                np.cos(self.joint1_goal - self.joint_pos[0]),
+            )
+            self.torques[0] += self.joint1_goal_kp * joint1_error - self.joint1_goal_kd * self.joint_vel[0]
 
         # Always run superclass call for any cleanups at the end
         super().run_controller()
@@ -362,6 +378,11 @@ class OperationalSpaceController(Controller):
 
         # We also need to reset the goal in case the old goals were set to the initial confguration
         self.reset_goal()
+
+    def set_joint1_goal(self, goal=None, kp=0.0, kd=0.0):
+        self.joint1_goal = None if goal is None else float(goal)
+        self.joint1_goal_kp = float(kp)
+        self.joint1_goal_kd = float(kd)
 
     def reset_goal(self):
         """

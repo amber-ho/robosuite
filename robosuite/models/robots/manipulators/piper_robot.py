@@ -17,7 +17,7 @@ class Piper(ManipulatorModel):
 
     @property
     def default_mount(self):
-        return "RethinkMount"
+        return None
 
     @property
     def default_gripper(self):

@@ -27,10 +27,17 @@ class PiperGripperBase(GripperModel):
         return np.array([opening, -opening])
 
     @property
+    def init_action(self):
+        """Normalized two-actuator target matching the physical initial qpos."""
+        opening = self.init_qpos[0]
+        half_range = 0.035 / 2.0
+        return np.array([opening / half_range - 1.0, -opening / half_range + 1.0])
+
+    @property
     def _important_geoms(self):
         return {
-            "left_finger": ["left_finger_collision", "left_fingerpad_collision"],
-            "right_finger": ["right_finger_collision", "right_fingerpad_collision"],
+            "left_finger": ["left_finger_mesh_collision", "left_finger_collision", "left_fingerpad_collision"],
+            "right_finger": ["right_finger_mesh_collision", "right_finger_collision", "right_fingerpad_collision"],
             "left_fingerpad": ["left_fingerpad_collision"],
             "right_fingerpad": ["right_fingerpad_collision"],
         }
@@ -47,6 +54,8 @@ class PiperGripper(PiperGripperBase):
         -1 opens the gripper, +1 closes it.
         """
         assert len(action) == self.dof
+        if np.asarray(self.current_action).size != 2:
+            self.current_action = self.init_action.copy()
         self.current_action = np.clip(
             self.current_action + np.array([-1.0, 1.0]) * self.speed * np.sign(action), -1.0, 1.0
         )
@@ -54,7 +63,7 @@ class PiperGripper(PiperGripperBase):
 
     @property
     def speed(self):
-        return 0.12
+        return 0.35
 
     @property
     def dof(self):
