@@ -481,12 +481,15 @@ class Lift(SingleArmEnv):
 class LiftPlaceCuboid(Lift):
     """Lift the cuboid, place it on a target line, then return the gripper to rest."""
 
-    START_BASE_XY = np.array([0.30, 0.07])
-    TARGET_BASE_XY = np.array([0.30, -0.11])
+    START_BASE_XY = np.array([0.28, 0.07])
+    TARGET_BASE_XY = np.array([0.28, -0.11])
     TARGET_XY_TOLERANCE = 0.035
     REST_POS_TOLERANCE = 0.04
     REST_ORI_TOLERANCE = 0.25
-    LIFT_HEIGHT = 0.08
+    # Keep this aligned with script_lift.DEFAULT_SUCCESS_LIFT_HEIGHT and
+    # replay_with_sim.DEFAULT_SUCCESS_LIFT_HEIGHT so prepared source demos and
+    # generated rollouts use the same definition of "picked up".
+    LIFT_HEIGHT = 0.05
 
     def _create_visual_markers(self):
         base_xy = self.robot_base_xpos[:2]
